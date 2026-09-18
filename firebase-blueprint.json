@@ -1,0 +1,32 @@
+{
+  "entities": {
+    "Todo": {
+      "title": "Todo Item",
+      "description": "A single todo task item stored in Firestore",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Content of the task",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Completion status of the task"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Creation timestamp in milliseconds"
+        }
+      },
+      "required": ["text", "completed", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/todos/{todoId}": {
+      "schema": "Todo",
+      "description": "Collection of all todo items"
+    }
+  }
+}

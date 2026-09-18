@@ -1,0 +1,6 @@
+{
+  "name": "Todo List",
+  "description": "네온 블루, 퍼플, 핑크 네온 효과와 미래 도시 전광판 분위기를 연출한 Cyberpunk 스타일의 할 일 관리 웹 애플리케이션",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
