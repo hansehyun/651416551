@@ -1,329 +1,294 @@
-import React, { useState, useEffect } from 'react';
-import { AlertTriangle, X } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
+  collection,
+  doc,
+  setDoc,
   onSnapshot,
   query,
   orderBy,
-  doc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  getDocs,
+  limit,
+  getDocFromServer,
 } from 'firebase/firestore';
-import { Todo, FilterType } from './types.ts';
-import { TodoHeader } from './components/TodoHeader.tsx';
-import { TodoInput } from './components/TodoInput.tsx';
-import { TodoFilter } from './components/TodoFilter.tsx';
-import { TodoList } from './components/TodoList.tsx';
-import {
-  db,
-  todosCollectionRef,
-  testConnection,
-  handleFirestoreError,
-  OperationType,
-} from './firebase.ts';
+import { db } from './firebase';
+import { LeaderboardEntry, GameState } from './types';
+import { GameCanvas } from './components/GameCanvas';
+import { GameHUD } from './components/GameHUD';
+import { StartMenu } from './components/StartMenu';
+import { GameOverModal } from './components/GameOverModal';
+import { LeaderboardModal } from './components/LeaderboardModal';
+import { sound } from './utils/audio';
+import { AlertTriangle, Zap, X } from 'lucide-react';
 
 /**
- * 초기 할 일 시드 데이터 (Firestore 컬렉션이 비어있을 때 최초 1회 생성)
+ * Firebase Firestore 에러 처리 규격
  */
-const SEED_TODOS: Omit<Todo, 'id'>[] = [
-  {
-    text: '뉴로링크 사이버네틱스 방화벽 보안 프로토콜 갱신',
-    completed: true,
-    createdAt: Date.now() - 3600000,
-  },
-  {
-    text: '네온 시안 & 핫 핑크 홀로그램 HUD 인터페이스 보정',
-    completed: true,
-    createdAt: Date.now() - 1800000,
-  },
-  {
-    text: 'Cloud Firestore 실시간 동기화 매트릭스 점검',
-    completed: false,
-    createdAt: Date.now(),
-  },
-];
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
 
-export default function App() {
-  /**
-   * 1. 상태(State) 관리
-   * 
-   * - todos: Firestore로부터 실시간 동기화되는 Todo 항목 목록
-   * - filter: 현재 선택된 필터 탭 ('all' | 'active' | 'completed')
-   * - isLoading: 초기 데이터 로드 중 여부
-   * - isSyncing: Firestore와의 통신 상태 시각화
-   */
-  const [todos, setTodos] = useState<Todo[]>([]);
-  const [filter, setFilter] = useState<FilterType>('all');
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+export const App: React.FC = () => {
+  const [gameState, setGameState] = useState<GameState>('menu');
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isLeaderboardOpen, setIsLeaderboardOpen] = useState<boolean>(false);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [isLoadingScores, setIsLoadingScores] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // 실시간 게임 스탯 (HUD 연동)
+  const [hudStats, setHudStats] = useState({
+    score: 0,
+    combo: 1,
+    level: 1,
+    shards: 0,
+    shieldActive: true,
+    blasterTime: 0,
+    timewarpTime: 0,
+  });
+
+  // 게임 오버 시 최종 기록
+  const [finalStats, setFinalStats] = useState({
+    score: 0,
+    level: 1,
+    shards: 0,
+    maxCombo: 1,
+  });
+
   /**
-   * 2. Firestore 초기 연결 확인 및 실시간 데이터 구독 (onSnapshot)
-   * 
-   * 시니어 팁:
-   * `onSnapshot`을 사용하면 클라이언트가 직접 데이터를 다시 불러올 필요 없이,
-   * 추가/수정/삭제 등 Firestore의 데이터가 바뀔 때마다 실시간으로 콜백이 실행되어
-   * UI가 완벽하게 동기화됩니다. 새로고침 시에도 Firestore로부터 최신 데이터를 즉시 불러옵니다.
+   * 1. Firestore 연결 테스트
    */
   useEffect(() => {
-    // 연결 테스트 수행
-    testConnection();
-
-    // 생성 시간 내림차순(최신순) 쿼리
-    const q = query(todosCollectionRef, orderBy('createdAt', 'desc'));
-
-    const unsubscribe = onSnapshot(
-      q,
-      async (snapshot) => {
-        // 컬렉션이 완전히 비어있는 경우 최초 시드 데이터 생성 (첫 사용자 경험 제공)
-        if (snapshot.empty) {
-          try {
-            for (const seed of SEED_TODOS) {
-              const newDocRef = doc(todosCollectionRef);
-              await setDoc(newDocRef, seed);
-            }
-            setIsLoading(false);
-            return;
-          } catch (err) {
-            handleFirestoreError(err, OperationType.CREATE, 'todos');
-          }
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error('Firebase connection offline:', error);
         }
-
-        const loadedTodos: Todo[] = snapshot.docs.map((docSnap) => {
-          const data = docSnap.data();
-          return {
-            id: docSnap.id,
-            text: data.text ?? '',
-            completed: Boolean(data.completed),
-            createdAt: Number(data.createdAt ?? Date.now()),
-          };
-        });
-
-        setTodos(loadedTodos);
-        setIsLoading(false);
-        setErrorMessage(null);
-      },
-      (error) => {
-        setIsLoading(false);
-        const msg = error instanceof Error ? error.message : String(error);
-        setErrorMessage(`Firestore 동기화 오류: ${msg}`);
-        console.error('Firestore onSnapshot Error:', error);
       }
-    );
-
-    // 컴포넌트 언마운트 시 리스너 해제 (메모리 누수 방지)
-    return () => unsubscribe();
+    }
+    testConnection();
   }, []);
 
   /**
-   * 3. 할 일 추가 핸들러 (Firestore `setDoc`)
-   * 
-   * 시니어 팁:
-   * `doc(todosCollectionRef)`로 고유 ID를 가진 문서 참조를 생성한 후,
-   * `setDoc`으로 Firestore에 영구 저장합니다.
-   * `onSnapshot` 리스너가 이를 감지하여 `todos` state를 자동으로 갱신합니다.
+   * 2. 명예의 전당 (리더보드) 실시간 구독
    */
-  const handleAddTodo = async (text: string) => {
+  useEffect(() => {
+    const scoresColRef = collection(db, 'scores');
+    const q = query(scoresColRef, orderBy('score', 'desc'), limit(15));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list: LeaderboardEntry[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          list.push({
+            id: docSnap.id,
+            playerName: data.playerName || 'PILOT',
+            score: typeof data.score === 'number' ? data.score : 0,
+            level: typeof data.level === 'number' ? data.level : 1,
+            shardsCollected: typeof data.shardsCollected === 'number' ? data.shardsCollected : 0,
+            createdAt: typeof data.createdAt === 'number' ? data.createdAt : Date.now(),
+          });
+        });
+        setLeaderboard(list);
+        setIsLoadingScores(false);
+      },
+      (error) => {
+        setIsLoadingScores(false);
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error('Firestore leaderboard onSnapshot error:', msg);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // 게임 시작 핸들러
+  const handleStartGame = useCallback(() => {
+    setErrorMessage(null);
+    setGameState('playing');
+  }, []);
+
+  // 게임 오버 핸들러
+  const handleGameOver = useCallback((stats: { score: number; level: number; shards: number; maxCombo: number }) => {
+    setFinalStats(stats);
+    setGameState('gameover');
+  }, []);
+
+  // 스탯 업데이트 콜백
+  const handleUpdateStats = useCallback((stats: typeof hudStats) => {
+    setHudStats(stats);
+  }, []);
+
+  // 점수 등록 (Firestore 저장)
+  const handleSubmitScore = async (pilotName: string): Promise<boolean> => {
     try {
-      setIsSyncing(true);
       setErrorMessage(null);
-      const newDocRef = doc(todosCollectionRef);
-      const newTodoData = {
-        text,
-        completed: false,
+      const scoresColRef = collection(db, 'scores');
+      const newScoreRef = doc(scoresColRef);
+
+      await setDoc(newScoreRef, {
+        playerName: pilotName,
+        score: finalStats.score,
+        level: finalStats.level,
+        shardsCollected: finalStats.shards,
         createdAt: Date.now(),
-      };
-
-      await setDoc(newDocRef, newTodoData);
-    } catch (error) {
-      console.error('handleAddTodo Error:', error);
-      const msg = error instanceof Error ? error.message : String(error);
-      setErrorMessage(`할 일 추가 실패: ${msg}`);
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  /**
-   * 4. 완료 여부 토글 핸들러 (Firestore `updateDoc`)
-   * 
-   * 시니어 팁:
-   * 문서 전체를 덮어쓰지 않고 `updateDoc`을 사용해 `completed` 필드만 효율적으로 수정합니다.
-   */
-  const handleToggleTodo = async (id: string) => {
-    const targetTodo = todos.find((t) => t.id === id);
-    if (!targetTodo) return;
-
-    try {
-      setIsSyncing(true);
-      setErrorMessage(null);
-      const todoDocRef = doc(db, 'todos', id);
-      await updateDoc(todoDocRef, {
-        completed: !targetTodo.completed,
       });
+
+      return true;
     } catch (error) {
-      console.error('handleToggleTodo Error:', error);
+      console.error('Score submission error:', error);
       const msg = error instanceof Error ? error.message : String(error);
-      setErrorMessage(`할 일 상태 변경 실패: ${msg}`);
-    } finally {
-      setIsSyncing(false);
+      setErrorMessage(`점수 저장 실패: ${msg}`);
+      return false;
     }
   };
 
-  /**
-   * 5. 할 일 삭제 핸들러 (Firestore `deleteDoc`)
-   * 
-   * 시니어 팁:
-   * `deleteDoc`을 실행하면 Firestore에서 해당 문서가 완전히 삭제되며,
-   * 새로고침하거나 다른 기기에서 접속해도 삭제된 상태가 영구 유지됩니다.
-   */
-  const handleDeleteTodo = async (id: string) => {
-    try {
-      setIsSyncing(true);
-      setErrorMessage(null);
-      const todoDocRef = doc(db, 'todos', id);
-      await deleteDoc(todoDocRef);
-    } catch (error) {
-      console.error('handleDeleteTodo Error:', error);
-      const msg = error instanceof Error ? error.message : String(error);
-      setErrorMessage(`할 일 삭제 실패: ${msg}`);
-    } finally {
-      setIsSyncing(false);
+  // 사운드 토글
+  const handleToggleMute = () => {
+    const muted = sound.toggleMute();
+    setIsMuted(muted);
+  };
+
+  // 일시정지 토글
+  const handleTogglePause = () => {
+    if (gameState === 'playing') {
+      setGameState('paused');
+    } else if (gameState === 'paused') {
+      setGameState('playing');
     }
   };
 
-  /**
-   * 6. 파생 상태(Derived State) 계산
-   */
-  const filteredTodos = todos.filter((todo) => {
-    if (filter === 'active') return !todo.completed;
-    if (filter === 'completed') return todo.completed;
-    return true; // 'all'
-  });
-
-  const counts = {
-    all: todos.length,
-    active: todos.filter((t) => !t.completed).length,
-    completed: todos.filter((t) => t.completed).length,
-  };
+  const topScore = leaderboard.length > 0 ? leaderboard[0].score : 0;
 
   return (
-    <main className="relative min-h-screen cyber-grid-bg flex flex-col justify-center px-4 py-8 sm:py-16 text-slate-100 overflow-hidden">
-      {/* 1. 미래 도시 네온 불빛 반사 효과 (Cyan, Purple, Pink Ambient Glows) */}
-      <div
-        className="pointer-events-none absolute -top-24 -left-24 h-96 w-96 rounded-full bg-cyan-500/15 blur-[100px]"
-        aria-hidden="true"
-      />
-      <div
-        className="pointer-events-none absolute top-1/3 right-1/4 h-[450px] w-[450px] rounded-full bg-purple-600/15 blur-[120px]"
-        aria-hidden="true"
-      />
-      <div
-        className="pointer-events-none absolute -bottom-24 -right-24 h-96 w-96 rounded-full bg-pink-600/15 blur-[100px]"
-        aria-hidden="true"
-      />
+    <div
+      id="neon-space-dodger-app"
+      className="relative flex h-screen w-screen flex-col items-center justify-center overflow-hidden bg-[#05060b] text-neutral-100 font-rajdhani select-none"
+    >
+      {/* 백그라운드 미세 주사선 스캔라인 효과 */}
+      <div className="pointer-events-none absolute inset-0 z-10 scanlines opacity-40" />
 
-      <div className="relative mx-auto w-full max-w-xl z-10">
-        {/* 2. 미래 전광판 HUD 메인 패널 (Cyber Billboard Frame) */}
-        <section
-          id="todo-app-card"
-          className="relative overflow-hidden rounded-2xl border border-cyan-500/40 bg-neutral-950/85 p-6 shadow-[0_0_35px_rgba(0,240,255,0.15)] backdrop-blur-md sm:p-8"
+      {/* 시스템 에러 알림 배너 */}
+      {errorMessage && (
+        <div
+          id="system-error-banner"
+          className="absolute top-4 z-50 flex items-center justify-between gap-3 rounded-xl border border-pink-500/80 bg-pink-950/90 px-4 py-2.5 text-xs text-pink-200 shadow-[0_0_20px_rgba(255,0,128,0.5)] backdrop-blur-md animate-bounce"
         >
-          {/* 패널 모서리 사이버 볼트/리벳 데코레이션 */}
-          <div className="absolute top-2.5 left-2.5 h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_4px_#00f0ff]" />
-          <div className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-pink-500 shadow-[0_0_4px_#ff007f]" />
-          <div className="absolute bottom-2.5 left-2.5 h-1.5 w-1.5 rounded-full bg-purple-500 shadow-[0_0_4px_#a855f7]" />
-          <div className="absolute bottom-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_4px_#00f0ff]" />
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-pink-400" />
+            <span className="font-mono">{errorMessage}</span>
+          </div>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="rounded p-1 text-pink-400 hover:text-white"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
-          {/* 상단 얇은 사이버 네온 라인 */}
-          <div className="absolute top-0 left-10 right-10 h-[1px] bg-gradient-to-r from-transparent via-cyan-400/80 to-transparent" />
+      {/* 메인 게임 아케이드 프레임 */}
+      <div className="relative flex h-full w-full max-w-5xl flex-col overflow-hidden border-cyan-500/30 sm:border sm:rounded-2xl sm:my-3 sm:shadow-[0_0_40px_rgba(0,240,255,0.2)]">
+        {/* 상단 네온 HUD */}
+        <GameHUD
+          score={hudStats.score}
+          combo={hudStats.combo}
+          level={hudStats.level}
+          shards={hudStats.shards}
+          shieldActive={hudStats.shieldActive}
+          blasterTime={hudStats.blasterTime}
+          timewarpTime={hudStats.timewarpTime}
+          isMuted={isMuted}
+          isPaused={gameState === 'paused'}
+          onToggleMute={handleToggleMute}
+          onTogglePause={handleTogglePause}
+          onOpenLeaderboard={() => setIsLeaderboardOpen(true)}
+        />
 
-          {/* 헤더 및 프로그레스 바 */}
-          <TodoHeader
-            totalCount={counts.all}
-            completedCount={counts.completed}
-          />
+        {/* 60FPS 메인 캔버스 엔진 */}
+        <GameCanvas
+          isPlaying={gameState === 'playing' || gameState === 'paused'}
+          isPaused={gameState === 'paused'}
+          onGameOver={handleGameOver}
+          onUpdateStats={handleUpdateStats}
+        />
 
-          {/* 시스템 알림 / 에러 HUD 배너 */}
-          {errorMessage && (
-            <div
-              id="todo-error-banner"
-              className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-pink-500/80 bg-pink-950/40 p-3.5 text-xs text-pink-200 shadow-[0_0_15px_rgba(255,0,128,0.3)] backdrop-blur-sm"
-              role="alert"
+        {/* 모바일 화면 하단 레이저 발사 보조 버튼 (블래스터 활성화 시 등장) */}
+        {gameState === 'playing' && hudStats.blasterTime > 0 && (
+          <div className="pointer-events-auto absolute bottom-6 right-6 z-20 flex sm:hidden">
+            <button
+              id="mobile-fire-btn"
+              onClick={() => {
+                const event = new KeyboardEvent('keydown', { code: 'Space' });
+                window.dispatchEvent(event);
+              }}
+              className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-pink-400 bg-pink-600/80 text-white shadow-[0_0_20px_rgba(255,0,128,0.6)] active:scale-90"
+              aria-label="블래스터 발사"
             >
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-pink-400 animate-pulse mt-0.5" />
-                <div>
-                  <p className="font-cyber font-bold tracking-wider text-pink-300 uppercase">
-                    SYSTEM ALERT // FIRESTORE ERROR
-                  </p>
-                  <p className="mt-0.5 font-mono text-pink-200/90">{errorMessage}</p>
-                </div>
-              </div>
+              <Zap className="h-8 w-8 fill-current text-white animate-pulse" />
+            </button>
+          </div>
+        )}
+
+        {/* 시작 화면 오버레이 */}
+        {gameState === 'menu' && (
+          <StartMenu
+            onStartGame={handleStartGame}
+            onOpenLeaderboard={() => setIsLeaderboardOpen(true)}
+            topScore={topScore}
+          />
+        )}
+
+        {/* 일시정지 오버레이 */}
+        {gameState === 'paused' && (
+          <div
+            id="pause-overlay"
+            className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm"
+          >
+            <div className="rounded-2xl border border-cyan-500/50 bg-neutral-950/90 p-6 text-center shadow-[0_0_30px_rgba(0,240,255,0.3)]">
+              <h3 className="font-cyber text-2xl font-black text-cyan-300 uppercase tracking-widest">
+                MISSION PAUSED
+              </h3>
+              <p className="mt-1 text-xs text-neutral-400">시스템 일시 정지 중입니다</p>
               <button
-                type="button"
-                id="todo-error-dismiss-btn"
-                onClick={() => setErrorMessage(null)}
-                className="rounded p-1 text-pink-400 hover:bg-pink-900/50 hover:text-pink-200 transition-colors"
-                aria-label="알림 닫기"
+                onClick={() => setGameState('playing')}
+                className="mt-5 rounded-xl border border-cyan-400 bg-cyan-600/80 px-6 py-2.5 font-cyber text-xs font-bold uppercase tracking-wider text-white shadow-[0_0_15px_rgba(0,240,255,0.4)] hover:bg-cyan-500"
               >
-                <X className="h-3.5 w-3.5" />
+                RESUME FLIGHT
               </button>
             </div>
-          )}
-
-          {/* 터미널 할 일 입력창 */}
-          <TodoInput onAddTodo={handleAddTodo} isSyncing={isSyncing} />
-
-          {/* 네온 필터 탭 (전체 / 진행 중 / 완료) */}
-          <TodoFilter
-            currentFilter={filter}
-            onFilterChange={setFilter}
-            counts={counts}
-          />
-
-          {/* 로딩 인디케이터 또는 할 일 목록 매트릭스 */}
-          {isLoading ? (
-            <div
-              id="todo-loading-state"
-              className="flex flex-col items-center justify-center py-12 text-center"
-            >
-              <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent shadow-[0_0_15px_rgba(0,240,255,0.5)]" />
-              <p className="mt-3 font-cyber text-xs tracking-wider text-cyan-300">
-                CONNECTING TO CLOUD FIRESTORE...
-              </p>
-            </div>
-          ) : (
-            <TodoList
-              todos={filteredTodos}
-              filter={filter}
-              onToggle={handleToggleTodo}
-              onDelete={handleDeleteTodo}
-            />
-          )}
-        </section>
-
-        {/* 3. 하단 사이버펑크 터미널 가이드 풋터 (Firestore 연동 안내) */}
-        <footer className="mt-5 flex items-center justify-between px-2 text-[11px] font-mono text-neutral-500">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${
-                isSyncing
-                  ? 'bg-pink-500 animate-ping shadow-[0_0_8px_#ff007f]'
-                  : 'bg-emerald-400 shadow-[0_0_6px_#34d399]'
-              }`}
-            />
-            <span className={isSyncing ? 'text-pink-400' : 'text-emerald-400/80'}>
-              {isSyncing ? 'FIRESTORE SYNCING...' : 'CLOUD FIRESTORE LIVE // SYNCED'}
-            </span>
           </div>
-          <span className="text-cyan-500/60 hidden sm:inline">
-            PERSISTENCE ENABLED
-          </span>
-        </footer>
+        )}
+
+        {/* 게임 오버 모달 */}
+        {gameState === 'gameover' && (
+          <GameOverModal
+            score={finalStats.score}
+            level={finalStats.level}
+            shards={finalStats.shards}
+            maxCombo={finalStats.maxCombo}
+            onRestart={handleStartGame}
+            onSubmitScore={handleSubmitScore}
+            onOpenLeaderboard={() => setIsLeaderboardOpen(true)}
+          />
+        )}
+
+        {/* 명예의 전당 (리더보드) 모달 */}
+        <LeaderboardModal
+          isOpen={isLeaderboardOpen}
+          onClose={() => setIsLeaderboardOpen(false)}
+          scores={leaderboard}
+          isLoading={isLoadingScores}
+        />
       </div>
-    </main>
+    </div>
   );
-}
+};
+export default App;

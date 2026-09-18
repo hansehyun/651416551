@@ -1,32 +1,40 @@
 {
   "entities": {
-    "Todo": {
-      "title": "Todo Item",
-      "description": "A single todo task item stored in Firestore",
+    "Score": {
+      "title": "Leaderboard Score",
+      "description": "High score record for Neon Space Dodger",
       "type": "object",
       "properties": {
-        "text": {
+        "playerName": {
           "type": "string",
-          "description": "Content of the task",
+          "description": "Pilot callsign name",
           "minLength": 1,
-          "maxLength": 500
+          "maxLength": 30
         },
-        "completed": {
-          "type": "boolean",
-          "description": "Completion status of the task"
+        "score": {
+          "type": "number",
+          "description": "Final score achieved"
+        },
+        "level": {
+          "type": "number",
+          "description": "Highest level survived"
+        },
+        "shardsCollected": {
+          "type": "number",
+          "description": "Total energy shards collected"
         },
         "createdAt": {
           "type": "number",
           "description": "Creation timestamp in milliseconds"
         }
       },
-      "required": ["text", "completed", "createdAt"]
+      "required": ["playerName", "score", "level", "createdAt"]
     }
   },
   "firestore": {
-    "/todos/{todoId}": {
-      "schema": "Todo",
-      "description": "Collection of all todo items"
+    "/scores/{scoreId}": {
+      "schema": "Score",
+      "description": "Collection of leaderboard scores"
     }
   }
 }

@@ -1,6 +1,6 @@
 {
-  "name": "Todo List",
-  "description": "네온 블루, 퍼플, 핑크 네온 효과와 미래 도시 전광판 분위기를 연출한 Cyberpunk 스타일의 할 일 관리 웹 애플리케이션",
+  "name": "Neon Space Dodger",
+  "description": "네온 우주선을 조종하여 소행성을 회피하고 에너지 수정을 모으는 레트로 사이버펑크 아케이드 게임 및 실시간 리더보드",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
